@@ -2,7 +2,11 @@
 import { body } from "express-validator";
 
 export const signupValidator = [
-  body("name").trim().escape().notEmpty().withMessage("Name is required"),
+  body("fullName") // ✅ FIXED from 'name'
+    .trim()
+    .escape()
+    .notEmpty()
+    .withMessage("Full name is required."),
 
   body("email")
     .normalizeEmail()
@@ -24,6 +28,5 @@ export const signupValidator = [
 
 export const loginValidator = [
   body("email").normalizeEmail().isEmail().withMessage("Enter a valid email"),
-
   body("password").trim().notEmpty().withMessage("Password is required"),
 ];

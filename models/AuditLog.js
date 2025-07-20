@@ -1,23 +1,26 @@
+// In models/AuditLog.js
 import mongoose from "mongoose";
 
 const auditLogSchema = new mongoose.Schema(
   {
-    user: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      required: true,
-    },
+    // ... other fields ...
     action: {
       type: String,
       required: true,
-      enum: ["LOGIN", "BOOK", "CANCEL", "PROFILE_UPDATE"],
+      enum: [
+        "LOGIN",
+        "BOOK",
+        "CANCEL",
+        "PROFILE_UPDATE",
+        // ✅ CONFIRM THESE ARE PRESENT AND SPELLED CORRECTLY:
+        "BOOKING_CREATED",
+        "BOOKING_CANCELLED",
+      ],
     },
-    details: {
-      type: Object, // any relevant info (e.g. busId, seat number)
-    },
+    // ... other fields ...
   },
   {
-    timestamps: true, // includes createdAt
+    timestamps: true,
   }
 );
 

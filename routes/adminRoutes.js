@@ -1,17 +1,48 @@
 import express from "express";
 import authMiddleware from "../middleware/authMiddleware.js";
 import adminMiddleware from "../middleware/adminMiddleware.js";
+import asyncHandler from "express-async-handler";
+
 import Booking from "../models/Booking.js";
 import Bus from "../models/Bus.js";
+import User from "../models/User.js";
+import { registerOperator } from "../controllers/adminOperatorController.js"; // ✅ NEW
 
 const router = express.Router();
 
-// ✅ Admin welcome/test route
+/* ─────────────────────────────────────────────────────────
+   Admin dashboard
+────────────────────────────────────────────────────────── */
 router.get("/dashboard", authMiddleware, adminMiddleware, (req, res) => {
   res.json({ message: "Welcome Admin!", user: req.user });
 });
 
-// ✅ Get all bookings with filters
+/* ─────────────────────────────────────────────────────────
+   Operators – list & create
+────────────────────────────────────────────────────────── */
+router.get(
+  "/operators",
+  authMiddleware,
+  adminMiddleware,
+  asyncHandler(async (req, res) => {
+    const operators = await User.find({ role: "operator" }).select(
+      "_id fullName email"
+    );
+    res.json(operators);
+  })
+);
+
+// ✅ NEW: create/register operator
+router.post(
+  "/operators/register",
+  authMiddleware,
+  adminMiddleware,
+  registerOperator
+);
+
+/* ─────────────────────────────────────────────────────────
+   Bookings
+────────────────────────────────────────────────────────── */
 router.get("/bookings", authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { date, from, to, userEmail } = req.query;
@@ -38,7 +69,9 @@ router.get("/bookings", authMiddleware, adminMiddleware, async (req, res) => {
   }
 });
 
-// ✅ CRUD for buses
+/* ─────────────────────────────────────────────────────────
+   Buses (CRUD)
+────────────────────────────────────────────────────────── */
 router.post("/buses", authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const bus = await Bus.create(req.body);
@@ -73,7 +106,9 @@ router.delete(
   }
 );
 
-// ✅ Cancel booking
+/* ─────────────────────────────────────────────────────────
+   Booking cancel / reschedule
+────────────────────────────────────────────────────────── */
 router.delete(
   "/bookings/:id",
   authMiddleware,
@@ -88,7 +123,6 @@ router.delete(
   }
 );
 
-// ✅ Reschedule booking
 router.put(
   "/bookings/:id",
   authMiddleware,
@@ -125,7 +159,9 @@ router.put(
   }
 );
 
-// ✅ Update trending offer for a specific bus
+/* ─────────────────────────────────────────────────────────
+   Trending offers
+────────────────────────────────────────────────────────── */
 router.put(
   "/buses/:id/trending-offer",
   authMiddleware,

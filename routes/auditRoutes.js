@@ -1,3 +1,4 @@
+// routes/auditRoutes.js
 import express from "express";
 import { getAuditLogs } from "../controllers/auditController.js";
 import authMiddleware from "../middleware/authMiddleware.js";

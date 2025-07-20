@@ -1,11 +1,10 @@
-// controllers/profileController.js
 import asyncHandler from "../utils/asyncHandler.js";
 import User from "../models/User.js";
-import logAudit from "../utils/auditLogger.js"; // ✅ Import logAudit as default
+import logAudit from "../utils/auditLogger.js";
 import bcrypt from "bcryptjs";
 
 /**
- * ✅ Get user profile
+ * Get user profile
  * @route GET /api/profile
  * @access Private
  */
@@ -19,17 +18,17 @@ export const getProfile = asyncHandler(async (req, res) => {
 
   res.json({
     id: user._id,
-    name: user.name,
+    fullName: user.fullName,
     email: user.email,
     nic: user.nic,
-    phone: user.phone,
+    phone: user.mobile, // return `mobile` as `phone` for frontend
     profilePicture: user.profilePicture,
     role: user.role,
   });
 });
 
 /**
- * ✅ Update user profile
+ * Update user profile
  * @route PUT /api/profile
  * @access Private
  */
@@ -42,21 +41,33 @@ export const updateProfile = asyncHandler(async (req, res) => {
   }
 
   const updates = {};
-  const fieldsToUpdate = ["name", "nic", "phone", "profilePicture"];
+  const fieldsToUpdate = [
+    "fullName",
+    "email",
+    "nic",
+    "mobile",
+    "profilePicture",
+  ];
 
   fieldsToUpdate.forEach((field) => {
-    if (req.body[field] && req.body[field] !== user[field]) {
+    const bodyValue =
+      field === "fullName" && req.body.name
+        ? req.body.name
+        : field === "mobile" && req.body.phone
+        ? req.body.phone
+        : req.body[field];
+
+    if (bodyValue && bodyValue !== user[field]) {
       updates[field] = {
         old: user[field] || null,
-        new: req.body[field],
+        new: bodyValue,
       };
-      user[field] = req.body[field];
+      user[field] = bodyValue;
     }
   });
 
   await user.save();
 
-  // ✅ Log audit only if there were actual changes
   if (Object.keys(updates).length > 0) {
     await logAudit(req.user.id, "PROFILE_UPDATE", updates, req.ip);
   }
@@ -65,10 +76,10 @@ export const updateProfile = asyncHandler(async (req, res) => {
     message: "Profile updated successfully",
     user: {
       id: user._id,
-      name: user.name,
+      fullName: user.fullName,
       email: user.email,
       nic: user.nic,
-      phone: user.phone,
+      phone: user.mobile, // again, return as `phone`
       profilePicture: user.profilePicture,
       role: user.role,
     },
@@ -76,7 +87,7 @@ export const updateProfile = asyncHandler(async (req, res) => {
 });
 
 /**
- * ✅ Change user password
+ * Change user password
  * @route PUT /api/profile/change-password
  * @access Private
  */
@@ -100,11 +111,9 @@ export const changePassword = asyncHandler(async (req, res) => {
     throw new Error("Current password is incorrect");
   }
 
-  // ✅ Update password securely
   user.password = newPassword;
   await user.save();
 
-  // ✅ Log audit for password change
   await logAudit(req.user.id, "PASSWORD_CHANGED", {}, req.ip);
 
   res.json({ message: "Password changed successfully" });

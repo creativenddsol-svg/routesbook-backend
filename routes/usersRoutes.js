@@ -1,18 +1,20 @@
 // routes/userRoutes.js
 import express from "express";
 import authMiddleware from "../middleware/authMiddleware.js";
+import adminMiddleware from "../middleware/adminMiddleware.js";
 import User from "../models/User.js";
 import bcrypt from "bcryptjs";
+import asyncHandler from "express-async-handler";
 
 const router = express.Router();
 
-// Get current profile
+// ✅ Get current logged-in user profile
 router.get("/", authMiddleware, async (req, res) => {
   const user = await User.findById(req.user.id).select("-password");
   res.json(user);
 });
 
-// Update profile info (name, NIC, email)
+// ✅ Update profile info
 router.put("/", authMiddleware, async (req, res) => {
   const { name, email, nic } = req.body;
 
@@ -27,7 +29,7 @@ router.put("/", authMiddleware, async (req, res) => {
   res.json({ message: "Profile updated" });
 });
 
-// Change password
+// ✅ Change password
 router.put("/password", authMiddleware, async (req, res) => {
   const { oldPassword, newPassword } = req.body;
 
@@ -44,5 +46,18 @@ router.put("/password", authMiddleware, async (req, res) => {
   await user.save();
   res.json({ message: "Password changed successfully" });
 });
+
+// ✅ NEW: Get all operator users (admin only)
+router.get(
+  "/operators",
+  authMiddleware,
+  adminMiddleware,
+  asyncHandler(async (req, res) => {
+    const operators = await User.find({ role: "operator" }).select(
+      "_id fullName email"
+    );
+    res.json(operators);
+  })
+);
 
 export default router;

@@ -13,7 +13,7 @@ import jwt from "jsonwebtoken";
  * Signup Controller
  */
 export const signup = asyncHandler(async (req, res) => {
-  const { name, email, password } = req.body;
+  const { fullName, email, password } = req.body; // ✅ FIXED
 
   const exist = await User.findOne({ email });
   if (exist) {
@@ -21,7 +21,7 @@ export const signup = asyncHandler(async (req, res) => {
     throw new Error("User already exists");
   }
 
-  const user = await User.create({ name, email, password });
+  const user = await User.create({ fullName, email, password }); // ✅ FIXED
 
   const accessToken = generateAccessToken({ id: user._id, role: user.role });
   const refreshToken = generateRefreshToken({ id: user._id });
@@ -30,14 +30,14 @@ export const signup = asyncHandler(async (req, res) => {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "Strict",
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 
   res.status(201).json({
     token: accessToken,
     user: {
       id: user._id,
-      name: user.name,
+      fullName: user.fullName, // ✅ FIXED
       role: user.role,
     },
   });
@@ -69,7 +69,7 @@ export const login = asyncHandler(async (req, res) => {
     token: accessToken,
     user: {
       id: user._id,
-      name: user.name,
+      fullName: user.fullName, // ✅ FIXED
       role: user.role,
     },
   });
@@ -146,7 +146,7 @@ export const sendResetPasswordEmail = asyncHandler(async (req, res) => {
 
   const resetLink = `${process.env.CLIENT_URL}/reset-password/${resetToken}`;
   const htmlMessage = `
-    <p>Hello ${user.name},</p>
+    <p>Hello ${user.fullName},</p>
     <p>You requested a password reset. Click the link below to set a new password:</p>
     <a href="${resetLink}">${resetLink}</a>
     <p>If you did not request this, you can ignore this email.</p>

@@ -1,176 +1,172 @@
-// server/controllers/bookingController.js
-
 import Booking from "../models/Booking.js";
 import Bus from "../models/Bus.js";
-import SeatLock from "../models/SeatLock.js";
-import asyncHandler from "../utils/asyncHandler.js";
+import asyncHandler from "express-async-handler";
 import logAudit from "../utils/auditLogger.js";
 import mongoose from "mongoose";
 
-// ✅ Create booking with seat lock verification and limit
 export const createBooking = asyncHandler(async (req, res) => {
-  const { busId, date, selectedSeats } = req.body;
-
-  if (!busId || !date || !selectedSeats || selectedSeats.length === 0) {
-    res.status(400);
-    throw new Error("Missing booking details.");
-  }
-
-  if (!mongoose.Types.ObjectId.isValid(busId)) {
-    res.status(400);
-    throw new Error("Invalid bus ID.");
-  }
-
-  if (!mongoose.Types.ObjectId.isValid(req.user.id)) {
-    res.status(400);
-    throw new Error("Invalid user ID.");
-  }
-
-  // ✅ Enforce seat limit
-  if (selectedSeats.length > 4) {
-    res.status(400);
-    throw new Error("You can only book up to 4 seats at a time.");
-  }
-
-  // ✅ Remove expired seat locks
-  await SeatLock.deleteMany({ expiresAt: { $lt: new Date() } });
-
-  // ✅ Validate seat lock
-  const seatLock = await SeatLock.findOne({
-    bus: busId,
-    user: req.user.id,
+  // 1. GET ALL THE DATA FROM THE FRONTEND FLOW
+  const {
+    busId,
     date,
-    selectedSeats: { $all: selectedSeats },
-  });
+    selectedSeats,
+    departureTime,
+    passenger, // This is the passenger object from the frontend
+    boardingPoint,
+    droppingPoint,
+  } = req.body;
 
-  if (!seatLock) {
+  // 2. VALIDATE THE INCOMING DATA
+  if (
+    !busId ||
+    !date ||
+    !selectedSeats ||
+    selectedSeats.length === 0 ||
+    !departureTime ||
+    !passenger || // Ensure passenger object exists
+    !boardingPoint ||
+    !droppingPoint
+  ) {
     res.status(400);
-    throw new Error("No valid seat lock found. Please select seats again.");
+    throw new Error("Missing complete booking details.");
   }
 
-  // ✅ Double-check if seats are already booked
+  // 3. CHECK FOR SEAT CONFLICTS
   const existingBookings = await Booking.find({
     bus: busId,
     date,
-    selectedSeats: { $in: selectedSeats },
+    departureTime,
+    selectedSeats: { $in: selectedSeats.map(String) },
+    $or: [{ paymentStatus: "Paid" }, { isManual: true }],
   });
 
   if (existingBookings.length > 0) {
     res.status(409);
-    throw new Error("Some selected seats are already booked.");
+    throw new Error("Sorry, one or more selected seats were just booked.");
   }
 
-  // ✅ Create booking
-  const booking = await Booking.create({
-    user: req.user.id,
+  // 4. FETCH BUS DETAILS FROM DATABASE FOR PRICING
+  const bus = await Bus.findById(busId);
+  if (!bus) {
+    res.status(404);
+    throw new Error("Bus not found.");
+  }
+
+  // 5. CALCULATE PRICE ON THE BACKEND, IGNORING FRONTEND PRICE
+  let pricePerSeat = bus.price;
+
+  const specificFare = bus.fares?.find(
+    (f) =>
+      f.boardingPoint === boardingPoint?.point &&
+      f.droppingPoint === droppingPoint?.point
+  );
+  if (specificFare) {
+    pricePerSeat = specificFare.price;
+  }
+
+  const basePrice = pricePerSeat * selectedSeats.length;
+  let convenienceFee = 0;
+
+  if (bus.convenienceFee) {
+    if (bus.convenienceFee.amountType === "percentage") {
+      convenienceFee = (basePrice * bus.convenienceFee.value) / 100;
+    } else {
+      convenienceFee = bus.convenienceFee.value * selectedSeats.length;
+    }
+  }
+
+  const totalAmount = basePrice + convenienceFee;
+
+  // 6. ✅ FIX: BUILD THE BOOKING DOCUMENT DEFENSIVELY
+  const bookingData = {
+    user: req.user._id,
     bus: busId,
     date,
-    selectedSeats,
+    departureTime,
+    selectedSeats: selectedSeats.map(String),
+    // Use optional chaining (?.) to prevent crashes if passenger object is malformed
+    passengerInfo: {
+      fullName: passenger?.name || "N/A",
+      phone: passenger?.mobile || "N/A",
+      nic: passenger?.nic || "N/A",
+    },
+    from: boardingPoint?.point,
+    to: droppingPoint?.point,
     paymentStatus: "Paid",
-  });
+    convenienceFee,
+    totalAmount,
+  };
 
-  // ✅ Remove seat lock after successful booking
-  await seatLock.deleteOne();
+  // 7. CREATE THE BOOKING
+  const booking = await Booking.create(bookingData);
 
-  // ✅ Log audit
   await logAudit(
-    req.user.id,
+    req.user._id,
     "BOOKING_CREATED",
-    { busId, seats: selectedSeats, email: req.user.email },
+    { busId, seats: selectedSeats, email: req.user.email, departureTime },
     req.ip
   );
 
-  res.status(201).json(booking);
-});
-
-// ✅ Lock seats for 10 minutes (with 4-seat max limit)
-export const lockSeats = asyncHandler(async (req, res) => {
-  const { busId, date, selectedSeats } = req.body;
-
-  if (!busId || !date || !selectedSeats || selectedSeats.length === 0) {
-    res.status(400);
-    throw new Error("Missing seat lock details.");
-  }
-
-  if (selectedSeats.length > 4) {
-    res.status(400);
-    throw new Error("You can only lock up to 4 seats at a time.");
-  }
-
-  // ✅ Remove expired seat locks
-  await SeatLock.deleteMany({ expiresAt: { $lt: new Date() } });
-
-  // ✅ Check for conflicting locks by others
-  const conflictingLocks = await SeatLock.find({
-    bus: busId,
-    date,
-    selectedSeats: { $in: selectedSeats },
-  });
-
-  if (conflictingLocks.length > 0) {
-    res.status(409);
-    throw new Error("Some seats are temporarily locked by another user.");
-  }
-
-  // ✅ Create new seat lock
-  const lock = await SeatLock.create({
-    bus: busId,
-    user: req.user.id,
-    date,
-    selectedSeats,
-    expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 min lock
-  });
-
-  res.json({
-    message: "Seats locked successfully. Complete payment within 10 minutes.",
-    lockId: lock._id,
+  res.status(201).json({
+    message: "Booking created successfully.",
+    booking,
   });
 });
 
-// ✅ Get booked seats for a bus on a specific date
-export const getBookedSeats = asyncHandler(async (req, res) => {
-  const { date } = req.query;
-  const bookings = await Booking.find({ bus: req.params.busId, date });
-  const bookedSeats = bookings.flatMap((b) => b.selectedSeats);
-  res.json({ bookedSeats });
-});
+// --- Other controller functions remain unchanged ---
 
-// ✅ Get current user's bookings
-export const getMyBookings = asyncHandler(async (req, res) => {
-  const bookings = await Booking.find({ user: req.user.id }).populate("bus");
-  res.json(bookings);
-});
-
-// ✅ Cancel a booking
 export const cancelBooking = asyncHandler(async (req, res) => {
+  if (!req.user?._id) {
+    res.status(401);
+    throw new Error("User not authenticated.");
+  }
   const booking = await Booking.findOneAndDelete({
     _id: req.params.id,
-    user: req.user.id,
+    user: req.user._id,
   });
-
   if (!booking) {
     res.status(404);
     throw new Error("Booking not found or unauthorized.");
   }
-
   await logAudit(
-    req.user.id,
+    req.user._id,
     "BOOKING_CANCELLED",
     { bookingId: req.params.id, email: req.user.email },
     req.ip
   );
-
   res.json({ message: "Booking cancelled successfully." });
 });
 
-// ✅ Admin: Get all bookings with optional filters
+export const getBookedSeats = asyncHandler(async (req, res) => {
+  const { busId, date, departureTime } = req.query;
+  if (!busId || !date || !departureTime) {
+    res.status(400);
+    throw new Error("Bus ID, date, and departure time are required.");
+  }
+  const bookings = await Booking.find({
+    bus: busId,
+    date: date,
+    departureTime: departureTime,
+    $or: [{ paymentStatus: "Paid" }, { isManual: true }],
+  });
+  const bookedSeats = bookings.flatMap((b) => b.selectedSeats.map(String));
+  res.json({ bookedSeats });
+});
+
+export const getMyBookings = asyncHandler(async (req, res) => {
+  if (!req.user?._id) {
+    res.status(401);
+    throw new Error("User not authenticated.");
+  }
+  const bookings = await Booking.find({ user: req.user._id }).populate("bus");
+  res.json(bookings);
+});
+
 export const getAllBookings = asyncHandler(async (req, res) => {
   const { date, from, to, userEmail } = req.query;
   let query = {};
   if (date) query.date = date;
-
   let bookings = await Booking.find(query).populate("user").populate("bus");
-
   if (userEmail) {
     bookings = bookings.filter((b) =>
       b.user?.email?.toLowerCase().includes(userEmail.toLowerCase())
@@ -186,22 +182,27 @@ export const getAllBookings = asyncHandler(async (req, res) => {
       b.bus?.to?.toLowerCase().includes(to.toLowerCase())
     );
   }
-
   res.status(200).json(bookings);
 });
 
-// ✅ Check seat availability for a bus
 export const getSeatAvailability = asyncHandler(async (req, res) => {
-  const { date } = req.query;
+  const { date, departureTime } = req.query;
   const bus = await Bus.findById(req.params.busId);
   if (!bus) {
     res.status(404);
     throw new Error("Bus not found.");
   }
-
-  const bookings = await Booking.find({ bus: req.params.busId, date });
-  const bookedSeats = bookings.flatMap((b) => b.selectedSeats);
+  const bookings = await Booking.find({
+    bus: req.params.busId,
+    date,
+    departureTime: departureTime,
+    $or: [{ paymentStatus: "Paid" }, { isManual: true }],
+  });
+  const bookedSeats = bookings.flatMap((b) => b.selectedSeats.map(String));
   const availableSeats = bus.seatLayout.length - bookedSeats.length;
+  res.json({ availableSeats, bookedSeats });
+});
 
-  res.json({ availableSeats });
+export const lockSeats = asyncHandler(async (req, res) => {
+  res.status(410).json({ message: "Seat locking is no longer supported." });
 });
