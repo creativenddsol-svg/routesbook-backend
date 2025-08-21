@@ -13,7 +13,7 @@ import jwt from "jsonwebtoken";
  * Signup Controller
  */
 export const signup = asyncHandler(async (req, res) => {
-  const { fullName, email, password } = req.body; // ✅ FIXED
+  const { fullName, email, password } = req.body;
 
   const exist = await User.findOne({ email });
   if (exist) {
@@ -21,7 +21,7 @@ export const signup = asyncHandler(async (req, res) => {
     throw new Error("User already exists");
   }
 
-  const user = await User.create({ fullName, email, password }); // ✅ FIXED
+  const user = await User.create({ fullName, email, password });
 
   const accessToken = generateAccessToken({ id: user._id, role: user.role });
   const refreshToken = generateRefreshToken({ id: user._id });
@@ -37,7 +37,7 @@ export const signup = asyncHandler(async (req, res) => {
     token: accessToken,
     user: {
       id: user._id,
-      fullName: user.fullName, // ✅ FIXED
+      fullName: user.fullName,
       role: user.role,
     },
   });
@@ -69,7 +69,7 @@ export const login = asyncHandler(async (req, res) => {
     token: accessToken,
     user: {
       id: user._id,
-      fullName: user.fullName, // ✅ FIXED
+      fullName: user.fullName,
       role: user.role,
     },
   });
@@ -99,6 +99,7 @@ export const refreshAccessToken = asyncHandler(async (req, res) => {
       id: user._id,
       role: user.role,
     });
+
     const newRefreshToken = generateRefreshToken({ id: user._id });
 
     res.cookie("refreshToken", newRefreshToken, {

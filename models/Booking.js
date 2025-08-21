@@ -27,6 +27,24 @@ const bookingSchema = new mongoose.Schema(
       required: true,
     },
 
+    // --- ✅ NEW: store gender per seat for UI rules/coloring ---
+    seatAllocations: [
+      {
+        seat: { type: String, required: true },
+        gender: { type: String, enum: ["M", "F"], required: true },
+      },
+    ],
+
+    // --- ✅ NEW: per-seat passenger details (non-breaking, additive) ---
+    passengers: [
+      {
+        seat: { type: String, required: true },
+        name: { type: String, default: "" },
+        age: { type: Number, min: 0 },
+        gender: { type: String, enum: ["M", "F"] },
+      },
+    ],
+
     paymentStatus: {
       type: String,
       enum: ["Pending", "Paid", "Manual", "PaidToOperator"],

@@ -19,11 +19,13 @@ const fareSchema = new mongoose.Schema(
   { _id: false }
 );
 
-// Sub-schema for individual trip turn
+// ✅ Sub-schema for individual trip turn (now includes per-turn boarding/dropping)
 const tripTurnSchema = new mongoose.Schema(
   {
     departureTime: { type: String, required: true },
     arrivalTime: { type: String, required: true },
+    boardingPoints: [pointSchema], // ✅ new
+    droppingPoints: [pointSchema], // ✅ new
   },
   { _id: false }
 );
@@ -32,7 +34,7 @@ const tripTurnSchema = new mongoose.Schema(
 const rotationIntervalSchema = new mongoose.Schema(
   {
     dayOffset: { type: Number, required: true }, // e.g. 0 = first day
-    turns: [tripTurnSchema], // multiple trips for same day
+    turns: [tripTurnSchema], // each trip can now have its own boarding/dropping
   },
   { _id: false }
 );
@@ -48,7 +50,7 @@ const busSchema = new mongoose.Schema(
     arrivalTime: { type: String, required: true },
     busType: {
       type: String,
-      enum: ["AC", "Non-AC"],
+      enum: ["AC", "Non-AC", "Sleeper"],
       required: true,
     },
     seatLayout: { type: Array, required: true },
@@ -107,6 +109,8 @@ const busSchema = new mongoose.Schema(
     },
 
     fares: [fareSchema],
+
+    // ✅ Fallback for non-rotating buses
     boardingPoints: [pointSchema],
     droppingPoints: [pointSchema],
   },

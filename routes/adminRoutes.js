@@ -17,6 +17,14 @@ router.get("/dashboard", authMiddleware, adminMiddleware, (req, res) => {
   res.json({ message: "Welcome Admin!", user: req.user });
 });
 
+/* ✅ Admin token test route (optional) */
+router.get("/test-admin", authMiddleware, adminMiddleware, (req, res) => {
+  res.json({
+    message: "✅ You are authenticated as Admin!",
+    user: req.user,
+  });
+});
+
 /* ─────────────────────────────────────────────────────────
    Operators – list & create
 ────────────────────────────────────────────────────────── */

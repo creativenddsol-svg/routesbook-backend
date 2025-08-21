@@ -26,8 +26,10 @@ import journeyRoutes from "./routes/journeyRoutes.js";
 import operatorProfileRoutes from "./routes/operatorProfileRoutes.js";
 import operatorBusRoutes from "./routes/operatorBusRoutes.js";
 import operatorBookingRoutes from "./routes/operatorBookingRoutes.js";
-import adminPaymentRoutes from "./routes/adminPaymentRoutes.js"; // ✅ New payment route
-import uploadRoutes from "./routes/uploadRoutes.js"; // ✅ Upload route
+import adminPaymentRoutes from "./routes/adminPaymentRoutes.js";
+import uploadRoutes from "./routes/uploadRoutes.js";
+import noticeRoutes from "./routes/noticeRoutes.js";
+import whatsNewRoutes from "./routes/whatsNewRoutes.js";
 
 // --- Middleware Imports ---
 import { notFound, errorHandler } from "./middleware/errorMiddleware.js";
@@ -38,19 +40,15 @@ dotenv.config();
 // --- Initialize Express app ---
 const app = express();
 
-// --- Core Middleware ---
-app.use(
-  cors({
-    origin: process.env.CLIENT_URL || "http://localhost:3000",
-    credentials: true,
-  })
-);
-app.use(helmet());
-app.use(compression());
-app.use(express.json({ limit: "10kb" }));
-app.use(cookieParser());
-app.use(sanitize);
+// 🔒 Proxy awareness (Render, CDNs) — needed for correct IPs & secure cookies
+app.set("trust proxy", 1);
 
+// --- Database Connection ---
+connectDB(); // uses your ./config/db.js and process.env.MONGO_URI
+
+// --- Core Middleware Setup ---
+
+// 1) Logging
 if (process.env.NODE_ENV === "development") {
   app.use(morgan("dev"));
 } else {
@@ -61,7 +59,30 @@ if (process.env.NODE_ENV === "development") {
   );
 }
 
-// --- Rate Limiting ---
+// 2) Security headers
+app.use(helmet());
+
+// 3) CORS (multi-origin allowlist for Cloudflare Pages, localhost, custom domains)
+const defaultOrigins = ["http://localhost:3000", "http://localhost:5173"];
+const envOrigins = (process.env.CORS_ALLOWLIST || process.env.CLIENT_URL || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const ALLOWLIST = Array.from(new Set([...defaultOrigins, ...envOrigins]));
+
+app.use(
+  cors({
+    origin(origin, cb) {
+      // allow tools with no Origin (curl/Postman)
+      if (!origin) return cb(null, true);
+      const ok = ALLOWLIST.includes(origin);
+      cb(ok ? null : new Error(`CORS blocked: ${origin}`), ok);
+    },
+    credentials: true,
+  })
+);
+
+// 4) Rate limiting (global for /api — tune if needed)
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
@@ -71,20 +92,49 @@ const apiLimiter = rateLimit({
 });
 app.use("/api", apiLimiter);
 
-// --- Development Tools ---
-app.use("/api/dev", devRoutes);
+// 5) Sanitization
+app.use(sanitize);
 
-// --- Database Connection ---
-connectDB();
+// 6) Parsers
+app.use(express.json({ limit: "10kb" }));
+app.use(cookieParser());
 
-// ✅ Serve static uploaded files
+// 7) Compression
+app.use(compression());
+
+// --- Health Check (Render uses this) ---
+app.get("/health", (_req, res) => res.status(200).send("OK"));
+
+// --- Static File Serving with permissive CORS for images ---
 const __dirname = path.resolve();
+
+// Set CORS headers for /uploads responses (so images load on your FE domain)
+app.use("/uploads", (req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && ALLOWLIST.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  } else {
+    res.setHeader(
+      "Access-Control-Allow-Origin",
+      process.env.CLIENT_URL || "http://localhost:3000"
+    );
+  }
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Origin, X-Requested-With, Content-Type, Accept"
+  );
+  // allow cross-origin display of images
+  res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+  next();
+});
 app.use("/uploads", express.static(path.join(__dirname, "/uploads")));
 
-// --- API Route Mounting ---
+// --- API Routes ---
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
-app.use("/api/admin", adminPaymentRoutes); // ✅ Admin payment routes
+app.use("/api/admin", adminPaymentRoutes);
 app.use("/api/buses", busRoutes);
 app.use("/api/journeys", journeyRoutes);
 app.use("/api/bookings", bookingRoutes);
@@ -95,15 +145,22 @@ app.use("/api/operator/buses", operatorBusRoutes);
 app.use("/api/operator/bookings", operatorBookingRoutes);
 app.use("/api/special-notices", specialNoticeRoutes);
 app.use("/api/operator-profile", operatorProfileRoutes);
-app.use("/api/upload", uploadRoutes); // ✅ Upload route
+app.use("/api/upload", uploadRoutes);
+app.use("/api/notices", noticeRoutes);
+app.use("/api/whats-new", whatsNewRoutes);
 
-// --- Global Error Handling ---
+// --- Dev-only Routes ---
+if (process.env.NODE_ENV === "development") {
+  app.use("/api/dev", devRoutes);
+}
+
+// --- Errors ---
 app.use(notFound);
 app.use(errorHandler);
 
 // --- Start Server ---
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   logger.info(
     `🚀 Server running in ${process.env.NODE_ENV} mode on port ${PORT}`
   );

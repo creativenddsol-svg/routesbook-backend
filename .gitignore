@@ -1,0 +1,15 @@
+# env & logs
+.env
+*.log
+logs/
+
+# node
+node_modules/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# uploads
+uploads/

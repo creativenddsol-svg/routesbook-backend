@@ -1,6 +1,13 @@
 import Bus from "../models/Bus.js";
 import asyncHandler from "express-async-handler";
 
+/**
+ * A helper function to determine the scheduled departure/arrival turns for a specific date
+ * if the bus is on a rotating schedule.
+ * @param {object} bus - The bus object from the database.
+ * @param {string} date - The date for which to find the schedule (e.g., "2025-08-03").
+ * @returns {Array} - An array of scheduled turns for that day, or an empty array if none.
+ */
 const getScheduledTurnsForDate = (bus, date) => {
   if (!bus?.rotationSchedule?.isRotating || !date) {
     return [];
@@ -28,50 +35,47 @@ const getScheduledTurnsForDate = (bus, date) => {
   return [];
 };
 
+/**
+ * Fetches buses based on query parameters (from, to, date).
+ */
 export const getBuses = asyncHandler(async (req, res) => {
   const { from, to, date } = req.query;
   const query = {};
-
   if (from) query.from = from;
   if (to) query.to = to;
-
   const buses = await Bus.find(query);
-
   if (!date) {
     return res.json(buses);
   }
-
   const results = [];
   buses.forEach((bus) => {
-    // Case 1: The bus is NOT on a rotating schedule.
     if (!bus.rotationSchedule?.isRotating) {
       if (bus.departureTime) {
         const busInstance = bus.toObject();
         busInstance.isRotating = false;
         results.push(busInstance);
       }
-      return; // Move to the next bus.
+      return;
     }
-
-    // Case 2: The bus IS on a rotating schedule.
     const turnsForDay = getScheduledTurnsForDate(bus, date);
-
     turnsForDay.forEach((turn) => {
       if (turn && turn.departureTime) {
         const busInstance = bus.toObject();
         busInstance.departureTime = turn.departureTime;
         busInstance.arrivalTime = turn.arrivalTime;
+        busInstance.boardingPoints = turn.boardingPoints || [];
+        busInstance.droppingPoints = turn.droppingPoints || [];
         busInstance.isRotating = true;
         results.push(busInstance);
       }
     });
   });
-
   res.json(results);
 });
 
-// --- Your other controller functions ---
-
+/**
+ * Fetches a single bus by its ID.
+ */
 export const getBusById = asyncHandler(async (req, res) => {
   const bus = await Bus.findById(req.params.id);
   if (bus) {
@@ -82,31 +86,99 @@ export const getBusById = asyncHandler(async (req, res) => {
   }
 });
 
+/**
+ * === UPDATED: Fetches all buses that have an active and non-expired trending offer. ===
+ * This logic has been consolidated here from your busRoutes.js file.
+ */
+export const getTrendingBuses = asyncHandler(async (req, res) => {
+  const today = new Date();
+  const trendingBuses = await Bus.find({
+    "trendingOffer.isActive": true,
+    "trendingOffer.expiry": { $gte: today }, // Also check if the offer has expired
+  }).limit(6); // Limit to 6 results
+
+  if (trendingBuses) {
+    res.json(trendingBuses);
+  } else {
+    res.status(404).json({ message: "No trending offers found." });
+  }
+});
+
+/**
+ * === NEW: The function to properly update a trending offer. ===
+ */
+export const updateTrendingOffer = asyncHandler(async (req, res) => {
+  const { trendingOffer } = req.body;
+  const bus = await Bus.findById(req.params.id);
+
+  if (bus) {
+    // Directly assign the new trendingOffer object from the request.
+    // This is the correct way to update the nested document.
+    bus.trendingOffer = trendingOffer;
+
+    const updatedBus = await bus.save();
+    res.status(200).json(updatedBus);
+  } else {
+    res.status(404);
+    throw new Error("Bus not found");
+  }
+});
+
+/**
+ * Adds a new bus to the database.
+ */
 export const addBus = asyncHandler(async (req, res) => {
   const {
     name,
     from,
     to,
-    price,
-    seatLayout,
+    date,
     departureTime,
     arrivalTime,
     busType,
+    seatLayout,
+    price,
+    operatorLogo,
+    unavailableDates,
+    isAvailable,
+    operator,
+    features,
+    trendingOffer,
+    convenienceFee,
+    rotationSchedule,
+    boardingPoints,
+    droppingPoints,
+    fares,
   } = req.body;
   const bus = new Bus({
     name,
     from,
     to,
-    price,
-    seatLayout,
+    date,
     departureTime,
     arrivalTime,
     busType,
+    seatLayout,
+    price,
+    operatorLogo,
+    unavailableDates,
+    isAvailable,
+    operator,
+    features,
+    trendingOffer,
+    convenienceFee,
+    rotationSchedule,
+    boardingPoints,
+    droppingPoints,
+    fares,
   });
   const createdBus = await bus.save();
   res.status(201).json(createdBus);
 });
 
+/**
+ * Updates an existing bus by its ID.
+ */
 export const updateBus = asyncHandler(async (req, res) => {
   const bus = await Bus.findById(req.params.id);
   if (bus) {
@@ -119,6 +191,9 @@ export const updateBus = asyncHandler(async (req, res) => {
   }
 });
 
+/**
+ * Deletes a bus by its ID.
+ */
 export const deleteBus = asyncHandler(async (req, res) => {
   const bus = await Bus.findById(req.params.id);
   if (bus) {
@@ -130,6 +205,9 @@ export const deleteBus = asyncHandler(async (req, res) => {
   }
 });
 
+/**
+ * Fetches buses with pagination.
+ */
 export const getPaginatedBuses = asyncHandler(async (req, res) => {
   const pageSize = 10;
   const page = Number(req.query.pageNumber) || 1;
