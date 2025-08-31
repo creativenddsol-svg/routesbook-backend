@@ -62,25 +62,42 @@ if (process.env.NODE_ENV === "development") {
 // 2) Security headers
 app.use(helmet());
 
-// 3) CORS (multi-origin allowlist for Cloudflare Pages, localhost, custom domains)
+// 3) CORS (multi-origin allowlist for Vercel, localhost, custom domains)
 const defaultOrigins = ["http://localhost:3000", "http://localhost:5173"];
-const envOrigins = (process.env.CORS_ALLOWLIST || process.env.CLIENT_URL || "")
+
+// Collect explicit origins from env (comma-separated also supported via CORS_ALLOWLIST)
+const envOrigins = (process.env.CORS_ALLOWLIST || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+
+if (process.env.FRONTEND_URL) envOrigins.push(process.env.FRONTEND_URL);
+if (process.env.CLIENT_URL) envOrigins.push(process.env.CLIENT_URL);
+// Vercel sometimes exposes VERCEL_URL like "<project>.vercel.app" (no scheme)
+if (process.env.VERCEL_URL) envOrigins.push(`https://${process.env.VERCEL_URL}`);
+
 const ALLOWLIST = Array.from(new Set([...defaultOrigins, ...envOrigins]));
 
-app.use(
-  cors({
-    origin(origin, cb) {
-      // allow tools with no Origin (curl/Postman)
-      if (!origin) return cb(null, true);
-      const ok = ALLOWLIST.includes(origin);
-      cb(ok ? null : new Error(`CORS blocked: ${origin}`), ok);
-    },
-    credentials: true,
-  })
-);
+const corsOptions = {
+  origin(origin, cb) {
+    // allow server-to-server or tools with no Origin (curl/Postman)
+    if (!origin) return cb(null, true);
+
+    // allow exact matches from allowlist OR any *.vercel.app preview/production domain
+    if (ALLOWLIST.includes(origin) || /\.vercel\.app$/.test(origin)) {
+      return cb(null, true);
+    }
+
+    return cb(new Error(`Not allowed by CORS: ${origin}`));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
+
+app.use(cors(corsOptions));
+// make preflight responses explicit
+app.options("*", cors(corsOptions));
 
 // 4) Rate limiting (global for /api — tune if needed)
 const apiLimiter = rateLimit({
@@ -92,12 +109,12 @@ const apiLimiter = rateLimit({
 });
 app.use("/api", apiLimiter);
 
-// 5) Sanitization
-app.use(sanitize);
-
-// 6) Parsers
+// 5) Parsers (JSON/cookies) — placed BEFORE sanitize
 app.use(express.json({ limit: "10kb" }));
 app.use(cookieParser());
+
+// 6) Sanitization (after body parsing)
+app.use(sanitize);
 
 // 7) Compression
 app.use(compression());
@@ -111,19 +128,19 @@ const __dirname = path.resolve();
 // Set CORS headers for /uploads responses (so images load on your FE domain)
 app.use("/uploads", (req, res, next) => {
   const origin = req.headers.origin;
-  if (origin && ALLOWLIST.includes(origin)) {
+  if (origin && (ALLOWLIST.includes(origin) || /\.vercel\.app$/.test(origin))) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
   } else {
     res.setHeader(
       "Access-Control-Allow-Origin",
-      process.env.CLIENT_URL || "http://localhost:3000"
+      process.env.CLIENT_URL || process.env.FRONTEND_URL || "http://localhost:3000"
     );
   }
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Origin, X-Requested-With, Content-Type, Accept"
+    "Origin, X-Requested-With, Content-Type, Accept, Authorization"
   );
   // allow cross-origin display of images
   res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
