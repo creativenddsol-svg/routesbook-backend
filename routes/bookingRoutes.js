@@ -17,8 +17,8 @@ import {
 
 const router = express.Router();
 
-// ✅ Lock seats (optional or disabled)
-router.post("/lock", authMiddleware, lockSeats);
+// ✅ Lock seats (PUBLIC + rate limited) — fixes 401 for anonymous users
+router.post("/lock", bookingRateLimiter, lockSeats);
 
 // ✅ Release seats (user-held locks)
 router.delete("/release", authMiddleware, releaseSeats);
