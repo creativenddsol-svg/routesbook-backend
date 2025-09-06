@@ -1,20 +1,22 @@
+// controllers/bookingController.js
 import Booking from "../models/Booking.js";
 import Bus from "../models/Bus.js";
+import SeatLock from "../models/SeatLock.js"; // NEW
 import asyncHandler from "express-async-handler";
 import logAudit from "../utils/auditLogger.js";
 import mongoose from "mongoose";
 
+// 15 minutes
+const LOCK_MS = 15 * 60 * 1000;
+
 /**
- * Create booking
- * - Accepts:
- *    busId, date, departureTime, passenger (contact), boardingPoint, droppingPoint
- *    selectedSeats (legacy)
- *    seatAllocations: [{ seat, gender }]
- *    passengers: [{ seat, name, age, gender }]
- * - Persists:
- *    selectedSeats, seatAllocations, passengers, passengerInfo, from/to, fees/total
- * - Validates:
- *    seat conflicts, seat lists match, basic payload completeness
+ * Create booking (requires valid active seat locks by the same user)
+ * Accepts:
+ *  - busId, date (YYYY-MM-DD), departureTime
+ *  - passenger (contact) { name, mobile, nic, email }
+ *  - boardingPoint, droppingPoint
+ *  - selectedSeats (legacy) OR seatAllocations [{ seat, gender }]
+ *  - passengers [{ seat, name, age, gender }] (optional)
  */
 export const createBooking = asyncHandler(async (req, res) => {
   const {
@@ -59,9 +61,7 @@ export const createBooking = asyncHandler(async (req, res) => {
   if (Array.isArray(seatAllocations) && Array.isArray(selectedSeats)) {
     if (seatAllocations.length !== selectedSeats.length) {
       res.status(400);
-      throw new Error(
-        "seatAllocations length must match selectedSeats length."
-      );
+      throw new Error("seatAllocations length must match selectedSeats length.");
     }
   }
 
@@ -71,13 +71,11 @@ export const createBooking = asyncHandler(async (req, res) => {
     const effectiveSorted = [...effectiveSelectedSeats].map(String).sort();
     if (passengerSeats.join("|") !== effectiveSorted.join("|")) {
       res.status(400);
-      throw new Error(
-        "Passengers must cover every selected seat (seat mismatch)."
-      );
+      throw new Error("Passengers must cover every selected seat (seat mismatch).");
     }
   }
 
-  // Seat conflict check (paid or manual)
+  // Initial seat conflict check (paid or manual)
   const existingBookings = await Booking.find({
     bus: busId,
     date,
@@ -88,6 +86,21 @@ export const createBooking = asyncHandler(async (req, res) => {
   if (existingBookings.length > 0) {
     res.status(409);
     throw new Error("Sorry, one or more selected seats were just booked.");
+  }
+
+  // Require valid active locks for *all* seats by this user
+  const myActiveLocks = await SeatLock.find({
+    bus: busId,
+    date,
+    departureTime,
+    seatNo: { $in: effectiveSelectedSeats },
+    lockedBy: req.user._id,
+    expiresAt: { $gt: new Date() },
+  });
+
+  if (myActiveLocks.length !== effectiveSelectedSeats.length) {
+    res.status(409);
+    throw new Error("Some seats are no longer locked by you or the lock expired.");
   }
 
   // Fetch bus for pricing
@@ -156,7 +169,7 @@ export const createBooking = asyncHandler(async (req, res) => {
     departureTime,
     selectedSeats: effectiveSelectedSeats,
     seatAllocations: normalizedSeatAllocations,
-    passengers: normalizedPassengers, // NEW
+    passengers: normalizedPassengers,
     passengerInfo: {
       fullName: passenger?.name || "N/A",
       phone: passenger?.mobile || "N/A",
@@ -164,26 +177,66 @@ export const createBooking = asyncHandler(async (req, res) => {
     },
     from: boardingPoint?.point,
     to: droppingPoint?.point,
-    paymentStatus: "Paid",
+    paymentStatus: "Paid", // keep your current flow
     convenienceFee,
     totalAmount,
   };
 
-  const booking = await Booking.create(bookingData);
+  // Transaction: re-check conflicts, create booking, then remove locks
+  const session = await mongoose.startSession();
+  try {
+    session.startTransaction();
 
-  await logAudit(
-    req.user._id,
-    "BOOKING_CREATED",
-    {
-      busId,
-      seats: effectiveSelectedSeats,
-      email: req.user.email,
+    // Re-check seat conflict inside the transaction window
+    const conflictInTxn = await Booking.find({
+      bus: busId,
+      date,
       departureTime,
-    },
-    req.ip
-  );
+      selectedSeats: { $in: effectiveSelectedSeats },
+      $or: [{ paymentStatus: "Paid" }, { isManual: true }],
+    }).session(session);
 
-  res.status(201).json({ message: "Booking created successfully.", booking });
+    if (conflictInTxn.length > 0) {
+      throw new Error("Sorry, one or more selected seats were just booked (txn).");
+    }
+
+    // Create booking
+    const [booking] = await Booking.create([bookingData], { session });
+
+    // Remove my locks for these seats
+    await SeatLock.deleteMany(
+      {
+        bus: busId,
+        date,
+        departureTime,
+        seatNo: { $in: effectiveSelectedSeats },
+        lockedBy: req.user._id,
+      },
+      { session }
+    );
+
+    await session.commitTransaction();
+    session.endSession();
+
+    // Audit after commit
+    await logAudit(
+      req.user._id,
+      "BOOKING_CREATED",
+      {
+        busId,
+        seats: effectiveSelectedSeats,
+        email: req.user.email,
+        departureTime,
+      },
+      req.ip
+    );
+
+    return res.status(201).json({ message: "Booking created successfully.", booking });
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    throw err;
+  }
 });
 
 /**
@@ -214,8 +267,8 @@ export const cancelBooking = asyncHandler(async (req, res) => {
 /**
  * Get booked seats (for a specific bus/date/time)
  * Returns:
- *  - bookedSeats: [ "A1", ... ]
- *  - seatGenderMap: { "A1": "M" | "F", ... }  (for coloring / rules)
+ *  - bookedSeats: [ "A1", ... ]   (paid/manual only)
+ *  - seatGenderMap: { "A1": "M" | "F", ... }
  */
 export const getBookedSeats = asyncHandler(async (req, res) => {
   const { busId, date, departureTime } = req.query;
@@ -288,8 +341,9 @@ export const getAllBookings = asyncHandler(async (req, res) => {
  * Seat availability for a given bus/date/time
  * Returns:
  *  - availableSeats
- *  - bookedSeats
+ *  - bookedSeats (includes active locks)
  *  - seatGenderMap
+ *  - lockedSeats (optional: for UI badges)
  */
 export const getSeatAvailability = asyncHandler(async (req, res) => {
   const { date, departureTime } = req.query;
@@ -300,6 +354,7 @@ export const getSeatAvailability = asyncHandler(async (req, res) => {
     throw new Error("Bus not found.");
   }
 
+  // Paid/manual bookings
   const bookings = await Booking.find({
     bus: req.params.busId,
     date,
@@ -307,7 +362,18 @@ export const getSeatAvailability = asyncHandler(async (req, res) => {
     $or: [{ paymentStatus: "Paid" }, { isManual: true }],
   });
 
-  const bookedSeats = bookings.flatMap((b) => b.selectedSeats.map(String));
+  const bookedSeatsPaidOrManual = bookings.flatMap((b) => b.selectedSeats.map(String));
+
+  // Active locks
+  const activeLocks = await SeatLock.find({
+    bus: req.params.busId,
+    date,
+    departureTime,
+    expiresAt: { $gt: new Date() },
+  }).select("seatNo");
+  const lockedSeats = activeLocks.map((l) => String(l.seatNo));
+
+  const bookedSeats = Array.from(new Set([...bookedSeatsPaidOrManual, ...lockedSeats]));
   const availableSeats = (bus.seatLayout?.length || 0) - bookedSeats.length;
 
   const seatGenderMap = {};
@@ -317,12 +383,86 @@ export const getSeatAvailability = asyncHandler(async (req, res) => {
     });
   });
 
-  res.json({ availableSeats, bookedSeats, seatGenderMap });
+  res.json({ availableSeats, bookedSeats, seatGenderMap, lockedSeats });
 });
 
 /**
- * Legacy: seat locking not supported
+ * Lock seats for 15 minutes (idempotent for same user; upserts and extends)
+ * POST /bookings/lock
+ * body: { busId, date, departureTime, seats: [ "12", ... ] }
  */
 export const lockSeats = asyncHandler(async (req, res) => {
-  res.status(410).json({ message: "Seat locking is no longer supported." });
+  const userId = req.user?._id;
+  const { busId, date, departureTime, seats } = req.body;
+
+  if (!userId || !busId || !date || !departureTime || !Array.isArray(seats) || seats.length === 0) {
+    res.status(400);
+    throw new Error("busId, date, departureTime and seats[] are required.");
+  }
+
+  const now = Date.now();
+  const expiresAt = new Date(now + LOCK_MS);
+  const results = [];
+
+  for (const raw of seats) {
+    const seatNo = String(raw);
+    const filter = {
+      bus: busId,
+      date,
+      departureTime,
+      seatNo,
+      $or: [
+        { expiresAt: { $lte: new Date(now) } }, // expired -> free
+        { lockedBy: userId }, // already mine -> extend
+      ],
+    };
+
+    try {
+      const doc = await SeatLock.findOneAndUpdate(
+        filter,
+        {
+          $set: { lockedBy: userId, lockedAt: new Date(now), expiresAt },
+          $setOnInsert: { bus: busId, date, departureTime, seatNo },
+        },
+        { new: true, upsert: true }
+      );
+      results.push({ seatNo, ok: true, lock: doc });
+    } catch (e) {
+      // unique index violation (someone else holds it)
+      results.push({ seatNo, ok: false, reason: "LOCKED_BY_ANOTHER_USER" });
+    }
+  }
+
+  const failed = results.filter((r) => !r.ok);
+  res.status(failed.length ? 207 : 200).json({
+    ok: failed.length === 0,
+    results,
+    expiresAt,
+    lockDurationMs: LOCK_MS,
+  });
+});
+
+/**
+ * Release seats held by the current user
+ * DELETE /bookings/release
+ * body: { busId, date, departureTime, seats: [ "12", ... ] }
+ */
+export const releaseSeats = asyncHandler(async (req, res) => {
+  const userId = req.user?._id;
+  const { busId, date, departureTime, seats } = req.body;
+
+  if (!userId || !busId || !date || !departureTime || !Array.isArray(seats) || seats.length === 0) {
+    res.status(400);
+    throw new Error("busId, date, departureTime and seats[] are required.");
+  }
+
+  const r = await SeatLock.deleteMany({
+    bus: busId,
+    date,
+    departureTime,
+    seatNo: { $in: seats.map(String) },
+    lockedBy: userId,
+  });
+
+  res.json({ ok: true, released: r.deletedCount });
 });
