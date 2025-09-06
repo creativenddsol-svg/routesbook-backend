@@ -1,3 +1,4 @@
+// routes/bookingRoutes.js
 import express from "express";
 import authMiddleware from "../middleware/authMiddleware.js"; // ✅ fixed
 import adminMiddleware from "../middleware/adminMiddleware.js";
@@ -11,12 +12,16 @@ import {
   getAllBookings,
   getSeatAvailability,
   lockSeats,
+  releaseSeats, // ✅ NEW
 } from "../controllers/bookingController.js";
 
 const router = express.Router();
 
 // ✅ Lock seats (optional or disabled)
 router.post("/lock", authMiddleware, lockSeats);
+
+// ✅ Release seats (user-held locks)
+router.delete("/release", authMiddleware, releaseSeats);
 
 // ✅ Book seats
 router.post("/", authMiddleware, bookingRateLimiter, createBooking);
