@@ -34,6 +34,9 @@ import whatsNewRoutes from "./routes/whatsNewRoutes.js";
 // --- Middleware Imports ---
 import { notFound, errorHandler } from "./middleware/errorMiddleware.js";
 
+// --- NEW (Seat Lock model import for index sync) ---
+import SeatLock from "./models/SeatLock.js";
+
 // Load environment variables
 dotenv.config();
 
@@ -45,6 +48,13 @@ app.set("trust proxy", 1);
 
 // --- Database Connection ---
 connectDB(); // uses your ./config/db.js and process.env.MONGO_URI
+
+// --- NEW (One-time ensure TTL/unique indexes are in place) ---
+mongoose.connection.once("open", () => {
+  SeatLock.syncIndexes()
+    .then(() => logger.info("SeatLock indexes synced"))
+    .catch((err) => logger.error(`SeatLock index sync error: ${err?.message || err}`));
+});
 
 // --- Core Middleware Setup ---
 
