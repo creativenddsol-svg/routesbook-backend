@@ -24,6 +24,17 @@ const getOwnerKey = (req) => {
   return cid || req.ip; // fallback to IP for anonymous users
 };
 
+// NEW: unify all possible keys that might have been used previously
+const getOwnerKeys = (req) => {
+  const keys = [];
+  if (req.user?._id) keys.push(String(req.user._id));
+  const cid = getClientId(req);
+  if (cid) keys.push(cid);
+  if (req.ip) keys.push(req.ip);
+  // ensure unique
+  return [...new Set(keys)];
+};
+
 /* =========================================================
  * CREATE BOOKING (protected)
  * ======================================================= */
@@ -94,10 +105,9 @@ export const createBooking = asyncHandler(async (req, res) => {
     throw new Error("Sorry, one or more selected seats were just booked.");
   }
 
-  // Require valid locks (accept: userId OR clientId OR same IP)
+  // Require valid locks (accept any of my identity keys)
   const now = new Date();
-  const ownerKey = getOwnerKey(req);
-  const cid = clientId || getClientId(req);
+  const ownerKeys = getOwnerKeys(req);
 
   const myLocks = await SeatLock.find({
     bus: busId,
@@ -106,10 +116,8 @@ export const createBooking = asyncHandler(async (req, res) => {
     seatNo: { $in: effectiveSelectedSeats },
     expiresAt: { $gt: now },
     $or: [
-      { lockedBy: req.user._id },
-      { ownerKey },            // userId or clientId or IP (depending on session)
-      ...(cid ? [{ ownerKey: cid }] : []),
-      { ownerKey: req.ip },    // safety: also honor IP-based holds
+      ...(req.user?._id ? [{ lockedBy: req.user._id }] : []),
+      { ownerKey: { $in: ownerKeys } },
     ],
   }).select("seatNo ownerKey lockedBy expiresAt");
 
@@ -222,10 +230,8 @@ export const createBooking = asyncHandler(async (req, res) => {
         departureTime,
         seatNo: { $in: effectiveSelectedSeats },
         $or: [
-          { lockedBy: req.user._id },
-          { ownerKey },
-          ...(cid ? [{ ownerKey: cid }] : []),
-          { ownerKey: req.ip },
+          ...(req.user?._id ? [{ lockedBy: req.user._id }] : []),
+          { ownerKey: { $in: ownerKeys } },
         ],
       },
       { session }
@@ -433,9 +439,10 @@ export const lockSeats = asyncHandler(async (req, res) => {
   }
 
   const now = Date.now();
-  const ownerKey = getOwnerKey(req); // <-- your identity (userId | clientId | IP)
+  const ownerKey = getOwnerKey(req);
+  const ownerKeys = getOwnerKeys(req); // consider all my possible identities
 
-  // Locked by others? (exclude my own ownerKey and my userId)
+  // Locked by others? (exclude my keys + userId)
   const otherLocks = await SeatLock.find({
     bus: busId,
     date,
@@ -444,7 +451,7 @@ export const lockSeats = asyncHandler(async (req, res) => {
     expiresAt: { $gt: new Date(now) },
     $nor: [
       ...(req.user?._id ? [{ lockedBy: req.user._id }] : []),
-      { ownerKey }, // exclude myself (works for clientId or IP)
+      { ownerKey: { $in: ownerKeys } },
     ],
   })
     .select("seatNo")
@@ -468,7 +475,7 @@ export const lockSeats = asyncHandler(async (req, res) => {
       $or: [
         { expiresAt: { $lte: new Date(now) } }, // expired -> free
         ...(req.user?._id ? [{ lockedBy: req.user._id }] : []),
-        { ownerKey }, // same owner -> extend
+        { ownerKey: { $in: ownerKeys } },       // any of my keys -> extend
       ],
     };
 
@@ -479,7 +486,7 @@ export const lockSeats = asyncHandler(async (req, res) => {
           $set: {
             lockedAt: new Date(now),
             expiresAt,
-            ownerKey,
+            ownerKey, // current canonical key
             ...(req.user?._id ? { lockedBy: req.user._id } : {}),
             ...(seatGenders && seatGenders[s] ? { gender: seatGenders[s] } : {}),
           },
@@ -490,7 +497,6 @@ export const lockSeats = asyncHandler(async (req, res) => {
       results.push({ seatNo: s, ok: true, lock: doc });
     } catch (e) {
       // Fallback for rare duplicate-key races:
-      // If an existing doc is actually mine (same ownerKey/lockedBy) or expired, extend it.
       try {
         const existing = await SeatLock.findOne({
           bus: busId,
@@ -503,7 +509,7 @@ export const lockSeats = asyncHandler(async (req, res) => {
           !!existing &&
           (
             (req.user?._id && String(existing.lockedBy) === String(req.user._id)) ||
-            existing.ownerKey === ownerKey
+            ownerKeys.includes(existing.ownerKey)
           );
 
         if (existing && (isMine || existing.expiresAt <= new Date(now))) {
@@ -550,7 +556,7 @@ export const releaseSeats = asyncHandler(async (req, res) => {
     throw new Error("busId, date, departureTime and seats[] are required.");
   }
 
-  const ownerKey = getOwnerKey(req);
+  const ownerKeys = getOwnerKeys(req);
 
   const result = await SeatLock.deleteMany({
     bus: busId,
@@ -559,7 +565,7 @@ export const releaseSeats = asyncHandler(async (req, res) => {
     seatNo: { $in: asSeatStrings(seats) },
     $or: [
       ...(req.user?._id ? [{ lockedBy: req.user._id }] : []),
-      { ownerKey },
+      { ownerKey: { $in: ownerKeys } },
     ],
   });
 
@@ -576,7 +582,7 @@ export const getLockRemaining = asyncHandler(async (req, res) => {
     throw new Error("busId, date, departureTime required.");
   }
 
-  const ownerKey = getOwnerKey(req);
+  const ownerKeys = getOwnerKeys(req);
 
   const locks = await SeatLock.find({
     bus: busId,
@@ -585,7 +591,7 @@ export const getLockRemaining = asyncHandler(async (req, res) => {
     expiresAt: { $gt: new Date() },
     $or: [
       ...(req.user?._id ? [{ lockedBy: req.user._id }] : []),
-      { ownerKey },
+      { ownerKey: { $in: ownerKeys } },
     ],
   }).select("expiresAt");
 
