@@ -455,7 +455,7 @@ export const lockSeats = asyncHandler(async (req, res) => {
     return res.status(409).json({ message: "Some seats already locked", seatsTaken: taken });
   }
 
-  // Upsert/extend my locks (one doc per seat)
+  // Upsert/extend my locks (one doc per seat) with a robust fallback
   const expiresAt = new Date(now + ttlMs);
   const results = [];
 
@@ -489,7 +489,44 @@ export const lockSeats = asyncHandler(async (req, res) => {
       );
       results.push({ seatNo: s, ok: true, lock: doc });
     } catch (e) {
-      results.push({ seatNo: s, ok: false, reason: "LOCKED_BY_ANOTHER_USER" });
+      // Fallback for rare duplicate-key races:
+      // If an existing doc is actually mine (same ownerKey/lockedBy) or expired, extend it.
+      try {
+        const existing = await SeatLock.findOne({
+          bus: busId,
+          date,
+          departureTime,
+          seatNo: s,
+        });
+
+        const isMine =
+          !!existing &&
+          (
+            (req.user?._id && String(existing.lockedBy) === String(req.user._id)) ||
+            existing.ownerKey === ownerKey
+          );
+
+        if (existing && (isMine || existing.expiresAt <= new Date(now))) {
+          const updated = await SeatLock.findOneAndUpdate(
+            { _id: existing._id },
+            {
+              $set: {
+                lockedAt: new Date(now),
+                expiresAt,
+                ownerKey,
+                ...(req.user?._id ? { lockedBy: req.user._id } : {}),
+                ...(seatGenders && seatGenders[s] ? { gender: seatGenders[s] } : {}),
+              },
+            },
+            { new: true }
+          );
+          results.push({ seatNo: s, ok: true, lock: updated });
+        } else {
+          results.push({ seatNo: s, ok: false, reason: "LOCKED_BY_ANOTHER_USER" });
+        }
+      } catch {
+        results.push({ seatNo: s, ok: false, reason: "LOCKED_BY_ANOTHER_USER" });
+      }
     }
   }
 
