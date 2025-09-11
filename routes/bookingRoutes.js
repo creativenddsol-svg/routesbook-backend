@@ -20,7 +20,10 @@ const router = express.Router();
 
 // Locks (public; guests allowed via clientId/IP)
 router.post("/lock", bookingRateLimiter, lockSeats);
+
+// Release (support DELETE and POST for sendBeacon/keepalive fallbacks)
 router.delete("/release", releaseSeats);
+router.post("/release", releaseSeats);
 
 // Remaining time (support both aliases used on FE)
 router.get("/lock-remaining", getLockRemaining);
