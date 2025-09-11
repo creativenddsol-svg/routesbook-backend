@@ -554,13 +554,20 @@ export const getLockRemaining = asyncHandler(async (req, res) => {
   const ownerKeyPrimary = getOwnerKey(req); // userId if logged in, else clientId
   const cid = getClientId(req);
 
-  // Optional seat filter (scope timer to specific seats if provided)
-  const seatsParam = req.query?.seats;
-  const seatsFilter = Array.isArray(seatsParam)
-    ? asSeatStrings(seatsParam)
-    : (typeof seatsParam === "string" && seatsParam.length
-        ? [String(seatsParam)]
-        : []);
+  // ---- Optional seat filter (scope the countdown to THESE seats only) ----
+  // Accept both seats and seats[] (and tolerate a single comma-separated string).
+  const rawSeats =
+    req.query?.seats ??
+    req.query?.["seats[]"] ??
+    req.query?.seat ??
+    null;
+
+  let seatsFilter = [];
+  if (Array.isArray(rawSeats)) {
+    seatsFilter = rawSeats.map(String);
+  } else if (typeof rawSeats === "string" && rawSeats.length) {
+    seatsFilter = rawSeats.split(",").map((s) => s.trim()).filter(Boolean);
+  }
 
   const q = {
     bus: busId,
@@ -574,7 +581,7 @@ export const getLockRemaining = asyncHandler(async (req, res) => {
     ],
   };
   if (seatsFilter.length) {
-    q.seatNo = { $in: seatsFilter };
+    q.seatNo = { $in: seatsFilter.map(String) };
   }
 
   const locks = await SeatLock.find(q).select("expiresAt");
