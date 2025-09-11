@@ -24,9 +24,9 @@ const getOwnerKey = (req) => {
   if (req.user?._id) return String(req.user._id);
   const cid = getClientId(req);
   if (cid) return cid;
-  // If you reach here, the frontend didn't send x-client-id.
-  // Make it explicit so the client fixes it (your FE api.js already sets it).
-  throw new Error("Missing clientId. Please send 'x-client-id' for anonymous seat locks.");
+  // If you reach here, the frontend didn't send clientId.
+  // Your FE api.js already injects it into body/query automatically.
+  throw new Error("Missing clientId. Include it in body/query or 'x-client-id' header.");
 };
 
 /* =========================================================
@@ -401,6 +401,7 @@ export const lockSeats = asyncHandler(async (req, res) => {
     seats,
     seatGenders = {},
     holdMinutes,
+    seatAllocations, // 👈 accept array form too
   } = req.body || {};
 
   if (!busId || !date || !departureTime || !Array.isArray(seats) || seats.length === 0) {
@@ -414,7 +415,16 @@ export const lockSeats = asyncHandler(async (req, res) => {
     throw new Error("Invalid busId.");
   }
 
+  // Normalize seats + seat gender map (array form wins if provided)
   const seatsStr = asSeatStrings(seats);
+  const seatGenderMap = { ...seatGenders };
+  if (Array.isArray(seatAllocations) && seatAllocations.length) {
+    for (const sa of seatAllocations) {
+      const s = String(sa?.seat);
+      if (s) seatGenderMap[s] = sa?.gender === "F" ? "F" : "M";
+    }
+  }
+
   const ttlMs = Number(holdMinutes) > 0 ? Number(holdMinutes) * 60 * 1000 : LOCK_MS;
 
   // Already booked?
@@ -484,7 +494,7 @@ export const lockSeats = asyncHandler(async (req, res) => {
             expiresAt,
             ownerKey,
             ...(req.user?._id ? { lockedBy: req.user._id } : {}),
-            ...(seatGenders && seatGenders[s] ? { gender: seatGenders[s] } : {}),
+            ...(seatGenderMap && seatGenderMap[s] ? { gender: seatGenderMap[s] } : {}),
           },
           $setOnInsert: { bus: busId, date, departureTime, seatNo: s },
         },
@@ -544,7 +554,15 @@ export const getLockRemaining = asyncHandler(async (req, res) => {
 
   const ownerKey = getOwnerKey(req);
 
-  const locks = await SeatLock.find({
+  // Optional seat filter (scope timer to specific seats if provided)
+  const seatsParam = req.query?.seats;
+  const seatsFilter = Array.isArray(seatsParam)
+    ? asSeatStrings(seatsParam)
+    : (typeof seatsParam === "string" && seatsParam.length
+        ? [String(seatsParam)]
+        : []);
+
+  const q = {
     bus: busId,
     date,
     departureTime,
@@ -553,7 +571,12 @@ export const getLockRemaining = asyncHandler(async (req, res) => {
       ...(req.user?._id ? [{ lockedBy: req.user._id }] : []),
       { ownerKey },
     ],
-  }).select("expiresAt");
+  };
+  if (seatsFilter.length) {
+    q.seatNo = { $in: seatsFilter };
+  }
+
+  const locks = await SeatLock.find(q).select("expiresAt");
 
   if (!locks.length) return res.json({ remainingMs: 0 });
 
