@@ -19,13 +19,10 @@ const getClientId = (req) =>
   null;
 
 // ⚠️ IMPORTANT: force a stable owner identity (userId or clientId only)
-// No IP fallback (IPs can change between requests behind proxies/CDNs).
 const getOwnerKey = (req) => {
   if (req.user?._id) return String(req.user._id);
   const cid = getClientId(req);
   if (cid) return cid;
-  // If you reach here, the frontend didn't send clientId.
-  // Your FE api.js already injects it into body/query automatically.
   throw new Error("Missing clientId. Include it in body/query or 'x-client-id' header.");
 };
 
@@ -401,7 +398,7 @@ export const lockSeats = asyncHandler(async (req, res) => {
     seats,
     seatGenders = {},
     holdMinutes,
-    seatAllocations, // 👈 accept array form too
+    seatAllocations, // also accept array
   } = req.body || {};
 
   if (!busId || !date || !departureTime || !Array.isArray(seats) || seats.length === 0) {
@@ -415,7 +412,7 @@ export const lockSeats = asyncHandler(async (req, res) => {
     throw new Error("Invalid busId.");
   }
 
-  // Normalize seats + seat gender map (array form wins if provided)
+  // Normalize seats + seat gender map
   const seatsStr = asSeatStrings(seats);
   const seatGenderMap = { ...seatGenders };
   if (Array.isArray(seatAllocations) && seatAllocations.length) {
@@ -446,7 +443,7 @@ export const lockSeats = asyncHandler(async (req, res) => {
   }
 
   const now = Date.now();
-  const ownerKey = getOwnerKey(req); // <- stable identity (userId or clientId)
+  const ownerKey = getOwnerKey(req); // userId or clientId
 
   // Locked by others? (exclude my own ownerKey and my userId)
   const otherLocks = await SeatLock.find({
@@ -526,7 +523,8 @@ export const releaseSeats = asyncHandler(async (req, res) => {
     throw new Error("busId, date, departureTime and seats[] are required.");
   }
 
-  const ownerKey = getOwnerKey(req);
+  const ownerKeyPrimary = getOwnerKey(req);     // userId or clientId (depending on auth)
+  const cid = getClientId(req);                 // always include explicit clientId if present
 
   const result = await SeatLock.deleteMany({
     bus: busId,
@@ -535,7 +533,8 @@ export const releaseSeats = asyncHandler(async (req, res) => {
     seatNo: { $in: asSeatStrings(seats) },
     $or: [
       ...(req.user?._id ? [{ lockedBy: req.user._id }] : []),
-      { ownerKey },
+      { ownerKey: ownerKeyPrimary },
+      ...(cid && cid !== ownerKeyPrimary ? [{ ownerKey: cid }] : []),
     ],
   });
 
@@ -552,7 +551,8 @@ export const getLockRemaining = asyncHandler(async (req, res) => {
     throw new Error("busId, date, departureTime required.");
   }
 
-  const ownerKey = getOwnerKey(req);
+  const ownerKeyPrimary = getOwnerKey(req); // userId if logged in, else clientId
+  const cid = getClientId(req);
 
   // Optional seat filter (scope timer to specific seats if provided)
   const seatsParam = req.query?.seats;
@@ -569,7 +569,8 @@ export const getLockRemaining = asyncHandler(async (req, res) => {
     expiresAt: { $gt: new Date() },
     $or: [
       ...(req.user?._id ? [{ lockedBy: req.user._id }] : []),
-      { ownerKey },
+      { ownerKey: ownerKeyPrimary },
+      ...(cid && cid !== ownerKeyPrimary ? [{ ownerKey: cid }] : []),
     ],
   };
   if (seatsFilter.length) {
