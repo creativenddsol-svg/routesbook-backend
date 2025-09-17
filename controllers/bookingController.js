@@ -5,6 +5,8 @@ import Booking from "../models/Booking.js";
 import Bus from "../models/Bus.js";
 import SeatLock from "../models/SeatLock.js";
 import logAudit from "../utils/auditLogger.js";
+// ✅ NEW: booking number allocator
+import { allocateBookingNo } from "../utils/bookingNo.js";
 
 /* ---------------- Config ---------------- */
 const LOCK_MS = 15 * 60 * 1000; // 15 minutes
@@ -214,7 +216,11 @@ export const createBooking = asyncHandler(async (req, res) => {
       throw new Error("Sorry, one or more selected seats were just booked (txn).");
     }
 
-    const [booking] = await Booking.create([bookingDoc], { session });
+    // ✅ NEW: allocate booking number (date-encoded) inside the same transaction
+    const { bookingNo, bookingNoShort } = await allocateBookingNo(session, date);
+    const bookingDocWithNo = { ...bookingDoc, bookingNo, bookingNoShort };
+
+    const [booking] = await Booking.create([bookingDocWithNo], { session });
 
     await SeatLock.deleteMany(
       {
