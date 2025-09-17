@@ -78,6 +78,19 @@ const bookingSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+
+    /* ---------- ✅ NEW: Human-friendly booking numbers ---------- */
+    // Example: RB202509170034 (date + daily sequence), and short: RB0034
+    bookingNo: {
+      type: String,
+      required: true,
+      unique: true,
+      index: true,
+    },
+    bookingNoShort: {
+      type: String,
+      index: true,
+    },
   },
   { timestamps: true }
 );
